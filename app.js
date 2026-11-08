@@ -52,7 +52,24 @@ function parseArchive(html){
  if(tracks.length>=7&&new Set(tracks.map(t=>t.slot)).size>=6)result[number]={tracks,source:ARCHIVE,importedAt:new Date().toISOString()};
  }return result
 }
-async function autoImport(mode){const buttons=['autoMissing','autoOne','autoRefresh'].map($);buttons.forEach(b=>b.disabled=true);autoStatus('Connecting to tracklist archive…');$('autoResults').textContent='';try{const html=await fetchArchive();autoStatus('Reading release tracklists…');const found=parseArchive(html),keys=Object.keys(found),want=mode==='one'?[$('importNumber').value.trim()]:keys;let imported=0,skipped=0;for(const n of want){if(!found[n])continue;if(state.releases[n]?.tracks?.length){skipped++;continue}state.releases[n]=found[n];selected.add(Number(n));imported++}persist();renderLibrary();autoStatus(`Found ${keys.length} release tracklists in the source. Imported ${imported}; skipped ${skipped} already populated. ${mode==='one'&&!found[want[0]]?'The requested release was not found.':''}`);$('autoResults').textContent=keys.length?'You can now select imported releases in Build class.':'No valid tracklists were detected; nothing was changed.';if(!keys.length)throw Error('Could not identify release tables in the source page.')}catch(e){autoStatus('Automatic import could not finish: '+e.message+' Your saved releases and playlists are unchanged.');}finally{buttons.forEach(b=>b.disabled=false)}}
+async function autoImport(mode){
+ const buttons=['autoMissing','autoOne','autoRefresh'].map($);buttons.forEach(b=>b.disabled=true);
+ autoStatus('Checking the GitHub-hosted release database…');$('autoResults').textContent='';
+ try{
+  const response=await fetch('./releases.json?updated='+Date.now(),{cache:'no-store'});
+  if(!response.ok)throw Error('Release database not published yet (HTTP '+response.status+'). Run the GitHub Actions “Update BODYCOMBAT tracklists” workflow first.');
+  const found=await response.json();if(!found||typeof found!=='object')throw Error('Invalid release database');
+  const keys=Object.keys(found).filter(n=>Array.isArray(found[n]?.tracks)&&found[n].tracks.length>=7);
+  const want=mode==='one'?[$('importNumber').value.trim()]:keys;
+  let imported=0,skipped=0;
+  for(const n of want){if(!keys.includes(n))continue;if(state.releases[n]?.tracks?.length){skipped++;continue}
+   state.releases[n]=found[n];selected.add(Number(n));imported++;
+  }
+  persist();renderLibrary();autoStatus(`Database contains ${keys.length} populated releases. Imported ${imported}; skipped ${skipped} already saved.`);
+  $('autoResults').textContent=mode==='one'&&!keys.includes(want[0])?'That release is not yet in the published database.':'Imported releases are ready in Build class.';
+ }catch(e){autoStatus('Import failed: '+e.message+' Existing playlists were not changed.');}
+ finally{buttons.forEach(b=>b.disabled=false)}
+}
 $('autoMissing').onclick=()=>autoImport('missing');$('autoOne').onclick=()=>autoImport('one');$('autoRefresh').onclick=()=>autoImport('refresh');
 $('searchWeb').onclick=()=>{let n=Number($('importNumber').value);if(!n){toast('Enter a release number');return}window.open('https://www.google.com/search?q='+encodeURIComponent(`BODYCOMBAT ${n} tracklist song artist`),'_blank','noopener')};$('officialSite').onclick=()=>window.open('https://www.lesmills.com/uk/tracklist/bodycombat','_blank','noopener');
 $('fetchUrl').onclick=async()=>{let url=$('sourceUrl').value.trim();if(!/^https?:\/\//i.test(url)){toast('Enter a full https URL');return}try{let res=await fetch(url,{signal:AbortSignal.timeout(12000)});if(!res.ok)throw Error('HTTP '+res.status);let txt=await res.text();let doc=new DOMParser().parseFromString(txt,'text/html');let raw=doc.body?.innerText||doc.body?.textContent||txt;$('pasteTracks').value=raw.slice(0,50000);toast('Page fetched. Review and format the track lines before importing.')}catch(e){toast('Source blocks direct access. Open it and paste the tracklist.')}};
