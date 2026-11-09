@@ -40,7 +40,7 @@ $('savedList').addEventListener('click',e=>{let b=e.target.closest('button');if(
 const ARCHIVE='https://japracool.com/bodycombat-tracklist/';
 function autoStatus(msg){$('autoStatus').textContent=msg}
 async function fetchArchive(){
- const urls=[ARCHIVE,'https://api.allorigins.win/raw?url='+encodeURIComponent(ARCHIVE),'https://corsproxy.io/?url='+encodeURIComponent(ARCHIVE)];
+ const urls=[ARCHIVE,'https://api.allorigins.win/raw?url='+encodeURIComponent(ARCHIVE),'https://corsproxy.io/?url='+encodeURIComponent(ARCHIVE),'https://r.jina.ai/https://japracool.com/bodycombat-tracklist/'];
  const errors=[];
  for(const url of urls){try{const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),14000);let r;try{r=await fetch(url,{signal:controller.signal,cache:'no-store'})}finally{clearTimeout(timer)}if(!r.ok)throw Error('HTTP '+r.status);const body=await r.text();if(!/BODYCOMBAT\s+10[0-8]/i.test(body)||body.length<15000)throw Error('Unexpected page response');return body}catch(e){errors.push(e.message)}}throw Error('The source or public access gateways blocked the request: '+errors.join('; '))
 }
@@ -54,20 +54,25 @@ function parseArchive(html){
 }
 async function autoImport(mode){
  const buttons=['autoMissing','autoOne','autoRefresh'].map($);buttons.forEach(b=>b.disabled=true);
- autoStatus('Checking the GitHub-hosted release database…');$('autoResults').textContent='';
+ autoStatus('Looking for release tracklists automatically…');$('autoResults').textContent='';
  try{
-  const response=await fetch('./releases.json?updated='+Date.now(),{cache:'no-store'});
-  if(!response.ok)throw Error('Release database not published yet (HTTP '+response.status+'). Run the GitHub Actions “Update BODYCOMBAT tracklists” workflow first.');
-  const found=await response.json();if(!found||typeof found!=='object')throw Error('Invalid release database');
+  let found={},errors=[];
+  try { const r=await fetch('./releases.json?updated='+Date.now(),{cache:'no-store'});if(r.ok){const data=await r.json();if(data&&typeof data==='object')found=data;} }catch(e){errors.push('Bundled database: '+e.message)}
+  if(!Object.values(found).some(x=>x?.tracks?.length>=7)){
+   autoStatus('Checking the online tracklist archive…');
+   try{found=parseArchive(await fetchArchive())}catch(e){errors.push(e.message)}
+  }
   const keys=Object.keys(found).filter(n=>Array.isArray(found[n]?.tracks)&&found[n].tracks.length>=7);
-  const want=mode==='one'?[$('importNumber').value.trim()]:keys;
+  if(!keys.length)throw Error('The tracklist provider is blocking automatic access. No releases were added. This is a connection limitation, not something you need to fix with a URL. '+errors.join('; '));
+  const requested=mode==='one'?String($('importNumber').value.trim()):null;
+  if(mode==='one'&&!requested)throw Error('Enter the release number you want to import.');
   let imported=0,skipped=0;
-  for(const n of want){if(!keys.includes(n))continue;if(state.releases[n]?.tracks?.length){skipped++;continue}
+  for(const n of keys){if(requested&&n!==requested)continue;if(state.releases[n]?.tracks?.length){skipped++;continue}
    state.releases[n]=found[n];selected.add(Number(n));imported++;
   }
-  persist();renderLibrary();autoStatus(`Database contains ${keys.length} populated releases. Imported ${imported}; skipped ${skipped} already saved.`);
-  $('autoResults').textContent=mode==='one'&&!keys.includes(want[0])?'That release is not yet in the published database.':'Imported releases are ready in Build class.';
- }catch(e){autoStatus('Import failed: '+e.message+' Existing playlists were not changed.');}
+  persist();renderLibrary();autoStatus(`Found ${keys.length} releases with tracklists. Added ${imported}; already saved ${skipped}.`);
+  $('autoResults').textContent=requested&&!keys.includes(requested)?'That release was not available from the source.':'Open Releases to browse the imported tracks.';
+ }catch(e){autoStatus('Automatic import unavailable: '+e.message)}
  finally{buttons.forEach(b=>b.disabled=false)}
 }
 $('autoMissing').onclick=()=>autoImport('missing');$('autoOne').onclick=()=>autoImport('one');$('autoRefresh').onclick=()=>autoImport('refresh');
