@@ -55,23 +55,26 @@ function parseArchive(html){
  }return result
 }
 function parseCopiedArchive(text){
- // Supports copying the full visible webpage as plain text, including tab-separated table cells.
- const lines=text.replace(/\r/g,'').split('\n').map(x=>x.trim()).filter(Boolean),found={};let release=null,tracks=[];
- const save=()=>{if(release&&tracks.length>=7&&new Set(tracks.map(t=>t.slot)).size>=6)found[release]={tracks,source:ARCHIVE,importedAt:new Date().toISOString()}};
+ const lines=text.replace(/\r/g,'').split('\n').map(x=>x.replace(/\u00a0/g,' ').trim()).filter(Boolean);
+ const found={};let release=null,tracks=[];
+ const isLabel=s=>/^(?:(?:bonus|alternative|alt)\s*)?\d{1,2}[A-C]?(?:\s*\((?:alt|alternative|[^)]*warm.up|[^)]*cool.down|[^)]*combat[^)]*|[^)]*power[^)]*)\))?$/i.test(s);
+ const add=(label,title,artist)=>{let m=label.match(/^(?:(?:bonus|alternative|alt)\s*)?(\d{1,2})/i);if(!m||!title||!artist)return;let slot=Number(m[1])-1;if(slot<0||slot>9)return;let t={number:label,slot,title:title.trim(),artist:artist.trim(),duration:''};if(t.title&&t.artist&&!tracks.some(x=>x.number===t.number&&x.title===t.title))tracks.push(t)};
+ const save=()=>{if(release&&tracks.length){let old=found[release]?.tracks||[];found[release]={tracks:[...old,...tracks.filter(t=>!old.some(x=>x.number===t.number&&x.title===t.title))],source:'User pasted tracklist',importedAt:new Date().toISOString()}}};
  for(let i=0;i<lines.length;i++){
-  const heading=lines[i].match(/^BODYCOMBAT\s+(\d{1,3}|UNITED)(?:\s|$)/i);
+  let line=lines[i];let heading=line.match(/^(?:#+\s*)?BODYCOMBAT\s*(\d{1,3}|UNITED)\b/i);
   if(heading){save();release=heading[1].toUpperCase();tracks=[];continue}
   if(!release)continue;
-  let cells=lines[i].split(/\t|\s{2,}|\s+\|\s+/).map(x=>x.trim()).filter(Boolean);
-  if(cells.length<3){const m=lines[i].match(/^((?:Bonus\s*)?\d{1,2}[A-C]?(?:\s*\(alt\))?)\s+(.+?)\s+[—–]\s+(.+)$/i);if(m)cells=m.slice(1)}
-  if(cells.length<3&&/^(?:bonus\s*)?\d{1,2}[A-C]?(?:\s*\(alt\))?$/i.test(lines[i])&&i+2<lines.length){cells=[lines[i],lines[i+1],lines[i+2]];i+=2}
-  if(cells.length<3)continue;const m=cells[0].match(/^(?:bonus\s*)?(\d{1,2})(?:[A-C]|\s*\(alt\))?/i);if(!m)continue;const slot=Number(m[1])-1;if(slot<0||slot>9)continue;
-  tracks.push({number:cells[0],slot,title:cells[1],artist:cells.slice(2).join(' '),duration:''});
+  if(/^(?:track\s*\|\s*song|track\s+song\s+artist|\d+\s+tracks?$|expand all|collapse all)/i.test(line))continue;
+  let cells=line.split(/\t|\s+\|\s+|\s{2,}/).map(x=>x.trim()).filter(Boolean);
+  if(cells.length>=3&&isLabel(cells[0])){add(cells[0],cells[1],cells.slice(2).join(' '));continue}
+  let m=line.match(/^((?:(?:bonus|alternative|alt)\s*)?\d{1,2}[A-C]?(?:\s*\([^)]*\))?)\s+[|—–-]\s+(.+?)\s+[|—–-]\s+(.+)$/i);
+  if(m){add(m[1],m[2],m[3]);continue}
+  if(isLabel(line)&&i+2<lines.length){let title=lines[i+1],artist=lines[i+2];if(!isLabel(title)&&!/^BODYCOMBAT\s/i.test(title)&&!/^BODYCOMBAT\s/i.test(artist)&&!/^Track\b/i.test(title)){add(line,title,artist);i+=2}}
  }
- save();return found
+ save();return found;
 }
-function importCollection(found,replace=false){let added=0,skipped=0,tracks=0;for(const [n,r] of Object.entries(found)){if(!Array.isArray(r.tracks)||r.tracks.length<7)continue;if(!replace&&state.releases[n]?.tracks?.length){skipped++;continue}state.releases[n]=r;tracks+=r.tracks.length;added++;if(n!=='UNITED')selected.add(Number(n))}persist();renderLibrary();return {added,skipped,tracks}}
-$('bulkPaste').onclick=()=>{const text=$('pasteTracks').value;const found=/<(?:html|table|h[1-4])\b/i.test(text)?parseArchive(text):parseCopiedArchive(text);const result=importCollection(found);const out=$('bulkResult');out.classList.remove('hidden');out.textContent=`Found ${Object.keys(found).length} complete release tracklists. Imported ${result.added} releases (${result.tracks} tracks), skipped ${result.skipped} already populated releases. ${!result.added?'If you copied only one song table, copy the entire page including release headings.':''}`;};
+function importCollection(found,replace=false){let added=0,skipped=0,tracks=0;for(const [n,r] of Object.entries(found)){if(!Array.isArray(r.tracks)||!r.tracks.length)continue;if(!replace&&state.releases[n]?.tracks?.length){skipped++;continue}state.releases[n]=r;tracks+=r.tracks.length;added++;if(n!=='UNITED')selected.add(Number(n))}persist();renderLibrary();return {added,skipped,tracks}}
+$('bulkPaste').onclick=()=>{const text=$('pasteTracks').value;let found=/<(?:html|table|h[1-4])\b/i.test(text)?parseArchive(text):parseCopiedArchive(text);if(!Object.keys(found).length&&$('importNumber').value.trim()){found=parseCopiedArchive('BODYCOMBAT '+$('importNumber').value.trim()+'\n'+text)}const result=importCollection(found);const out=$('bulkResult');out.classList.remove('hidden');out.textContent=`Detected ${Object.keys(found).length} releases. Added ${result.added} releases (${result.tracks} tracks). Skipped ${result.skipped} releases already populated. ${!Object.keys(found).length?'No release heading detected: paste BODYCOMBAT 75 on the line before its tracks.':''} ${!result.added&&result.skipped?'Existing releases were preserved; use backup before replacing them.':''}`;};
 
 async function autoImport(mode){
  const buttons=['autoMissing','autoOne','autoRefresh'].map($);buttons.forEach(b=>b.disabled=true);
