@@ -47,20 +47,41 @@ async function fetchArchive(){
 function parseArchive(html){
  const doc=new DOMParser().parseFromString(html,'text/html'),result={};
  const headers=[...doc.querySelectorAll('h1,h2,h3,h4')].filter(h=>/^BODYCOMBAT\s+(?:\d{1,3}|UNITED)\b/i.test(h.textContent.trim()));
- for(const h of headers){const match=h.textContent.trim().match(/^BODYCOMBAT\s+(\d{1,3}|UNITED)\b/i);if(!match)continue;const number=match[1].toUpperCase();let el=h.nextElementSibling,table=null;for(let i=0;el&&i<12;i++,el=el.nextElementSibling){if(/^H[1-4]$/.test(el.tagName)&&/^BODYCOMBAT\s+/i.test(el.textContent.trim()))break;table=el.matches('table')?el:el.querySelector('table');if(table)break}if(!table){let parent=h.parentElement;for(let i=0;parent&&i<3&&!table;i++,parent=parent.parentElement){let tables=[...parent.querySelectorAll('table')];if(tables.length===1)table=tables[0]}}if(!table)continue;
- const tracks=[...table.querySelectorAll('tr')].map(tr=>{let cells=[...tr.querySelectorAll('td')].map(td=>td.textContent.replace(/\s+/g,' ').trim());if(cells.length<3)return null;let label=cells[0];if(!/^(?:\d{1,2}[A-C]?|\d{1,2}\s*\(alt\)|bonus\s*\d{1,2}|alt(?:ernative)?\s*\d{1,2})\b/i.test(label))return null;const base=label.match(/\d{1,2}/);if(!base)return null;const slot=Number(base[0])-1;if(slot<0||slot>9)return null;return {number:label,slot,title:cells[1],artist:cells[2],duration:''}}).filter(t=>t&&t.title&&t.artist);
+ for(const h of headers){const match=h.textContent.trim().match(/^BODYCOMBAT\s+(\d{1,3}|UNITED)\b/i);if(!match)continue;const number=match[1].toUpperCase();let table=null;
+ for(let el=h.nextElementSibling;el;el=el.nextElementSibling){if(/^H[1-4]$/.test(el.tagName)&&/^BODYCOMBAT\s+/i.test(el.textContent.trim()))break;table=el.matches('table')?el:el.querySelector('table');if(table)break}
+ if(!table)continue;const tracks=[];
+ for(const tr of table.querySelectorAll('tr')){const cells=[...tr.querySelectorAll('td')].map(td=>td.textContent.replace(/\s+/g,' ').trim());if(cells.length<3)continue;const label=cells[0],m=label.match(/^(?:bonus\s*)?(\d{1,2})(?:[A-C]|\s*\(.*?\))?/i);if(!m)continue;const slot=Number(m[1])-1;if(slot<0||slot>9||!cells[1]||!cells[2])continue;tracks.push({number:label,slot,title:cells[1],artist:cells[2],duration:''})}
  if(tracks.length>=7&&new Set(tracks.map(t=>t.slot)).size>=6)result[number]={tracks,source:ARCHIVE,importedAt:new Date().toISOString()};
  }return result
 }
+function parseCopiedArchive(text){
+ // Supports copying the full visible webpage as plain text, including tab-separated table cells.
+ const lines=text.replace(/\r/g,'').split('\n').map(x=>x.trim()).filter(Boolean),found={};let release=null,tracks=[];
+ const save=()=>{if(release&&tracks.length>=7&&new Set(tracks.map(t=>t.slot)).size>=6)found[release]={tracks,source:ARCHIVE,importedAt:new Date().toISOString()}};
+ for(let i=0;i<lines.length;i++){
+  const heading=lines[i].match(/^BODYCOMBAT\s+(\d{1,3}|UNITED)(?:\s|$)/i);
+  if(heading){save();release=heading[1].toUpperCase();tracks=[];continue}
+  if(!release)continue;
+  let cells=lines[i].split(/\t|\s{2,}|\s+\|\s+/).map(x=>x.trim()).filter(Boolean);
+  if(cells.length<3){const m=lines[i].match(/^((?:Bonus\s*)?\d{1,2}[A-C]?(?:\s*\(alt\))?)\s+(.+?)\s+[—–]\s+(.+)$/i);if(m)cells=m.slice(1)}
+  if(cells.length<3&&/^(?:bonus\s*)?\d{1,2}[A-C]?(?:\s*\(alt\))?$/i.test(lines[i])&&i+2<lines.length){cells=[lines[i],lines[i+1],lines[i+2]];i+=2}
+  if(cells.length<3)continue;const m=cells[0].match(/^(?:bonus\s*)?(\d{1,2})(?:[A-C]|\s*\(alt\))?/i);if(!m)continue;const slot=Number(m[1])-1;if(slot<0||slot>9)continue;
+  tracks.push({number:cells[0],slot,title:cells[1],artist:cells.slice(2).join(' '),duration:''});
+ }
+ save();return found
+}
+function importCollection(found,replace=false){let added=0,skipped=0,tracks=0;for(const [n,r] of Object.entries(found)){if(!Array.isArray(r.tracks)||r.tracks.length<7)continue;if(!replace&&state.releases[n]?.tracks?.length){skipped++;continue}state.releases[n]=r;tracks+=r.tracks.length;added++;if(n!=='UNITED')selected.add(Number(n))}persist();renderLibrary();return {added,skipped,tracks}}
+$('bulkPaste').onclick=()=>{const text=$('pasteTracks').value;const found=/<(?:html|table|h[1-4])\b/i.test(text)?parseArchive(text):parseCopiedArchive(text);const result=importCollection(found);const out=$('bulkResult');out.classList.remove('hidden');out.textContent=`Found ${Object.keys(found).length} complete release tracklists. Imported ${result.added} releases (${result.tracks} tracks), skipped ${result.skipped} already populated releases. ${!result.added?'If you copied only one song table, copy the entire page including release headings.':''}`;};
+
 async function autoImport(mode){
  const buttons=['autoMissing','autoOne','autoRefresh'].map($);buttons.forEach(b=>b.disabled=true);
  autoStatus('Looking for release tracklists automatically…');$('autoResults').textContent='';
  try{
   let found={},errors=[];
   try { const r=await fetch('./releases.json?updated='+Date.now(),{cache:'no-store'});if(r.ok){const data=await r.json();if(data&&typeof data==='object')found=data;} }catch(e){errors.push('Bundled database: '+e.message)}
-  if(!Object.values(found).some(x=>x?.tracks?.length>=7)){
+  if(Object.keys(found).filter(n=>found[n]?.tracks?.length>=7).length<100){
    autoStatus('Checking the online tracklist archive…');
-   try{found=parseArchive(await fetchArchive())}catch(e){errors.push(e.message)}
+   try{found={...found,...parseArchive(await fetchArchive())}}catch(e){errors.push(e.message)}
   }
   const keys=Object.keys(found).filter(n=>Array.isArray(found[n]?.tracks)&&found[n].tracks.length>=7);
   if(!keys.length)throw Error('The tracklist provider is blocking automatic access. No releases were added. This is a connection limitation, not something you need to fix with a URL. '+errors.join('; '));
